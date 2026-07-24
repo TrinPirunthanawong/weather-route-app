@@ -298,6 +298,95 @@ def render_weather_card(kind: str, icon: str, title: str, location: str, eta_lab
     )
 
 
+def downsample_path(path: list, max_points: int = 100) -> list:
+    """ลดจำนวนจุดบนเส้นทางลง (เส้นทาง OSRM มีจุดละเอียดมากเกินจำเป็นสำหรับ query ปั๊มน้ำมัน)"""
+    n = len(path)
+    if n <= max_points:
+        return path
+    step = max(n // max_points, 1)
+    return path[::step]
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    from math import radians, sin, cos, sqrt, atan2
+
+    r = 6371.0
+    dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return 2 * r * atan2(sqrt(a), sqrt(1 - a))
+
+
+def _chunk_list(lst, n):
+    return [lst[i : i + n] for i in range(0, len(lst), n)]
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_fuel_stations_along_route(sample_coords: tuple, radius_m: int = 3000):
+    """
+    ค้นหาปั๊มน้ำมัน (amenity=fuel) จาก OpenStreetMap ผ่าน Overpass API
+    sample_coords: tuple ของ (lat, lon) ที่สุ่มมาจากเส้นทาง (เว้นระยะเท่า ๆ กัน)
+    radius_m: รัศมี (เมตร) ที่ถือว่า "อยู่ใกล้เส้นทาง" (ค่าเริ่มต้น 3 กม.)
+
+    วิธีการ: แบ่งจุดตัวอย่างเป็นช่วง ๆ (chunk) แล้วสร้าง bounding-box แคบ ๆ ต่อช่วง
+    เพื่อ query กับ Overpass (bbox คำนวณเร็วกว่า "around" หลายจุดมาก จึงไม่ timeout)
+    จากนั้นกรองผลลัพธ์อีกชั้นด้วยระยะทางจริง (haversine) ในฝั่ง Python
+    เพื่อตัดปั๊มที่อยู่ในกรอบสี่เหลี่ยมแต่ไกลจากแนวถนนจริงทิ้งไป
+    """
+    pad_deg = radius_m / 111_000  # แปลงเมตรเป็นองศาคร่าว ๆ สำหรับขยายขอบ bbox
+    chunks = _chunk_list(list(sample_coords), 12)
+
+    bbox_clauses = []
+    for chunk in chunks:
+        lats = [p[0] for p in chunk]
+        lons = [p[1] for p in chunk]
+        south, north = min(lats) - pad_deg, max(lats) + pad_deg
+        west, east = min(lons) - pad_deg, max(lons) + pad_deg
+        bbox_clauses.append(f'node["amenity"="fuel"]({south},{west},{north},{east});')
+
+    query = f"[out:json][timeout:20];({''.join(bbox_clauses)});out body;"
+
+    headers = {
+        "User-Agent": "WeatherRouteApp/1.0 (streamlit personal project)",
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    mirrors = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://lz4.overpass-api.de/api/interpreter",
+    ]
+
+    data, last_error = None, None
+    for url in mirrors:
+        try:
+            res = requests.post(url, data={"data": query}, headers=headers, timeout=20)
+            res.raise_for_status()
+            data = res.json()
+            break
+        except Exception as e:
+            last_error = e
+            continue
+
+    if data is None:
+        st.caption(f"⚠️ ไม่สามารถดึงข้อมูลปั๊มน้ำมันได้ในขณะนี้ ({last_error})")
+        return []
+
+    stations = []
+    seen_ids = set()
+    for el in data.get("elements", []):
+        lat, lon = el.get("lat"), el.get("lon")
+        if lat is None or lon is None or el.get("id") in seen_ids:
+            continue
+        # กรองด้วยระยะทางจริงจากจุดตัวอย่างบนเส้นทาง (ตัดปั๊มที่อยู่มุม bbox แต่ไกลจากถนนจริง)
+        min_dist_km = min(_haversine_km(lat, lon, p[0], p[1]) for p in sample_coords)
+        if min_dist_km * 1000 <= radius_m:
+            seen_ids.add(el.get("id"))
+            tags = el.get("tags", {})
+            name = tags.get("brand") or tags.get("name") or "ปั๊มน้ำมัน"
+            stations.append({"lat": lat, "lon": lon, "name": name})
+    return stations
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def get_rain_radar_tile_url():
     """ดึง URL เทมเพลตของเฟรมเรดาร์ฝนล่าสุดจาก RainViewer (ฟีเจอร์ 2)"""
@@ -415,6 +504,80 @@ def get_route_osrm(coords: tuple, mode: str = "driving"):
     return routes_data
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def get_route_ors(coords: tuple, api_key: str, profile: str = "driving-car", avoid_features: tuple = ()):
+    """
+    เรียก OpenRouteService (ORS) Directions API - ใช้เมื่อผู้ใช้ต้องการเลี่ยงทางด่วน/ด่านเก็บเงิน
+    ซึ่ง OSRM demo server สาธารณะไม่รองรับพารามิเตอร์เหล่านี้
+    coords: tuple ของ (lat, lon) เรียงจากต้นทาง -> จุดแวะ -> ปลายทาง
+    profile: driving-car / cycling-regular / foot-walking
+    avoid_features: เช่น ("highways",) หรือ ("highways","tollways")
+    หมายเหตุ: ORS ฟรี 2,000 requests/วัน ต้องสมัคร API key เอง (ฟรี ไม่ผูกบัตร)
+    """
+    coordinates = [[lon, lat] for lat, lon in coords]
+    body = {"coordinates": coordinates, "instructions": False}
+    if avoid_features:
+        body["options"] = {"avoid_features": list(avoid_features)}
+
+    headers = {"Authorization": api_key, "Content-Type": "application/json"}
+    url = f"https://api.openrouteservice.org/v2/directions/{profile}/geojson"
+
+    try:
+        res = requests.post(url, json=body, headers=headers, timeout=20)
+        if res.status_code in (401, 403):
+            st.error("❌ ORS API Key ไม่ถูกต้อง หรือยังไม่ได้เปิดใช้งาน กรุณาตรวจสอบใน Dashboard ของ OpenRouteService")
+            return []
+        if res.status_code == 404:
+            st.error("❌ ไม่พบเส้นทางที่ตรงเงื่อนไข (อาจเป็นเพราะเลี่ยงทางด่วน/ด่านเก็บเงินแล้วไม่มีถนนอื่นเชื่อมได้)")
+            return []
+        res.raise_for_status()
+        data = res.json()
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ OpenRouteService: {e}")
+        return []
+
+    features = data.get("features", [])
+    if not features:
+        return []
+
+    feat = features[0]
+    coords_out = feat["geometry"]["coordinates"]  # [lon, lat]
+    path = [[c[1], c[0]] for c in coords_out]
+
+    summary = feat["properties"]["summary"]
+    dist_km = round(summary["distance"] / 1000, 2)
+    duration_sec = summary["duration"]
+    total_minutes = int(duration_sec / 60)
+    if total_minutes >= 60:
+        time_str = f"{total_minutes // 60} ชม. {total_minutes % 60} นาที"
+    else:
+        time_str = f"{total_minutes} นาที"
+
+    leg_cum_km, cum = [], 0.0
+    for seg in feat["properties"].get("segments", []):
+        cum += seg["distance"] / 1000
+        leg_cum_km.append(round(cum, 2))
+
+    avg_speed_kmh = (dist_km / (duration_sec / 3600)) if duration_sec > 0 else 60
+
+    avoid_th = {"highways": "เลี่ยงทางด่วน", "tollways": "เลี่ยงด่านเก็บเงิน"}
+    avoid_label = (
+        " (" + ", ".join(avoid_th.get(a, a) for a in avoid_features) + ")" if avoid_features else ""
+    )
+
+    return [
+        {
+            "id": 0,
+            "label": f"เส้นทาง ORS{avoid_label} - {dist_km} กม. ({time_str})",
+            "path": path,
+            "dist_km": dist_km,
+            "time_str": time_str,
+            "avg_speed_kmh": avg_speed_kmh,
+            "leg_cum_km": leg_cum_km,
+        }
+    ]
+
+
 # =========================================================================
 # 2. TAB 1 - จุดเดียว
 # =========================================================================
@@ -524,6 +687,44 @@ with tab2:
         st.session_state["awaiting_geo"] = True
         st.rerun()
 
+    # --- ตัวเลือกเส้นทางขั้นสูง: เลี่ยงทางด่วน / เลี่ยงด่านเก็บเงิน (ผ่าน OpenRouteService) ---
+    default_ors_key = ""
+    try:
+        default_ors_key = st.secrets.get("ORS_API_KEY", "")
+    except Exception:
+        default_ors_key = ""
+
+    with st.expander("⚙️ ตัวเลือกเส้นทางขั้นสูง: เลี่ยงทางด่วน / เลี่ยงด่านเก็บเงิน"):
+        if default_ors_key:
+            # ตั้งค่า ORS_API_KEY ไว้ในระบบ (secrets.toml) แล้ว - ผู้ใช้ทุกคนใช้ร่วมกันได้เลย ไม่ต้องกรอกเอง
+            st.caption("✅ ระบบตั้งค่า OpenRouteService ไว้ให้แล้ว เลือกติ๊กด้านล่างได้เลย ไม่ต้องกรอก API key")
+            ors_api_key = default_ors_key
+        else:
+            st.caption(
+                "OSRM (เส้นทางปกติที่ใช้อยู่) ไม่รองรับการเลี่ยงทางด่วน/ด่านเก็บเงิน ฟีเจอร์นี้จึงต้องสลับไปใช้ "
+                "**OpenRouteService (ORS)** แทน สมัครฟรีได้ที่ "
+                "[openrouteservice.org/dev](https://openrouteservice.org/dev/#/signup) "
+                "(ฟรี 2,000 requests/วัน ไม่ต้องผูกบัตร) แล้วนำ API key มาใส่ด้านล่าง"
+            )
+            ors_api_key = st.text_input(
+                "ORS API Key", value="", type="password", key="ors_api_key_input",
+                placeholder="วาง API key ที่ได้จาก OpenRouteService ตรงนี้",
+            )
+        col_avoid1, col_avoid2 = st.columns(2)
+        with col_avoid1:
+            avoid_highway = st.checkbox("🛣️ เลี่ยงทางด่วน/มอเตอร์เวย์", key="avoid_highway_chk")
+        with col_avoid2:
+            avoid_toll = st.checkbox("💰 เลี่ยงด่านเก็บเงิน", key="avoid_toll_chk")
+        use_ors = bool(ors_api_key.strip()) and (avoid_highway or avoid_toll)
+        if (avoid_highway or avoid_toll) and not ors_api_key.strip():
+            st.warning("⚠️ ยังไม่มี ORS API Key ในระบบ ระบบจะใช้เส้นทางปกติ (ไม่เลี่ยงทางด่วน/ด่านเก็บเงิน) แทน")
+        st.caption(
+            "หมายเหตุ: \"เลี่ยงเมือง/ตัวเมือง\" ยังไม่มีให้ในบริการฟรีของ ORS โดยตรง "
+            "(รองรับแค่ระดับ ทางด่วน/ด่านเก็บเงิน/เรือข้ามฟาก เท่านั้น)"
+        )
+
+
+
     # --- จุดแวะระหว่างทาง (ฟีเจอร์ 1) ---
     st.markdown("**🟠 จุดแวะระหว่างทาง (ถ้ามี)**")
     for sid in list(st.session_state["stop_ids"]):
@@ -587,7 +788,30 @@ with tab2:
                     full_coords = (
                         [(lat_a, lon_a)] + [(sc["lat"], sc["lon"]) for sc in stop_coords] + [(lat_b, lon_b)]
                     )
-                    routes = get_route_osrm(tuple(full_coords), mode=travel_mode)
+
+                    if use_ors:
+                        ors_profile_map = {
+                            "driving": "driving-car",
+                            "bike": "cycling-regular",
+                            "foot": "foot-walking",
+                        }
+                        avoid_list = tuple(
+                            f for f, on in [("highways", avoid_highway), ("tollways", avoid_toll)] if on
+                        )
+                        routes = get_route_ors(
+                            tuple(full_coords),
+                            api_key=ors_api_key.strip(),
+                            profile=ors_profile_map[travel_mode],
+                            avoid_features=avoid_list,
+                        )
+                        if not routes:
+                            st.warning(
+                                "⚠️ ใช้ OpenRouteService ไม่สำเร็จ กำลังลองใช้เส้นทางปกติ (OSRM) แทน "
+                                "(จะไม่เลี่ยงทางด่วน/ด่านเก็บเงินในครั้งนี้)"
+                            )
+                            routes = get_route_osrm(tuple(full_coords), mode=travel_mode)
+                    else:
+                        routes = get_route_osrm(tuple(full_coords), mode=travel_mode)
 
                     if routes:
                         st.session_state["search_data"] = {
@@ -730,7 +954,11 @@ with tab2:
 
         # --- แผนที่ ---
         st.subheader("🗺️ แผนที่เส้นทาง")
-        show_radar = st.checkbox("🌧️ แสดงเรดาร์ฝนล่าสุดบนแผนที่ (RainViewer)", value=True, key="radar_tab2")
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            show_radar = st.checkbox("🌧️ แสดงเรดาร์ฝนล่าสุดบนแผนที่ (RainViewer)", value=True, key="radar_tab2")
+        with col_r2:
+            show_fuel = st.checkbox("⛽ แสดงปั๊มน้ำมันตามเส้นทาง (รัศมี 3 กม.)", value=True, key="fuel_tab2")
 
         mid_idx = len(selected_route["path"]) // 2
         map_center = selected_route["path"][mid_idx]
@@ -757,6 +985,27 @@ with tab2:
                 popup=f"กม.ที่ {wp['km_marker']}: {wp['location_name']} (ถึง ~{wp['eta_str']})",
                 icon=folium.Icon(color="orange", icon="info-sign"),
             ).add_to(m)
+
+        if show_fuel:
+            sample_for_fuel = tuple(tuple(p) for p in downsample_path(selected_route["path"], max_points=60))
+            fuel_stations = get_fuel_stations_along_route(sample_for_fuel)
+            if fuel_stations:
+                st.caption(f"⛽ พบปั๊มน้ำมัน {len(fuel_stations)} แห่ง ในระยะ ~3 กม. จากเส้นทาง")
+                fuel_group = folium.FeatureGroup(name="ปั๊มน้ำมัน (Fuel Stations)")
+                for fs in fuel_stations:
+                    folium.Marker(
+                        [fs["lat"], fs["lon"]],
+                        popup=fs["name"],
+                        tooltip=fs["name"],
+                        icon=folium.DivIcon(
+                            html='<div style="font-size:18px; line-height:1;">⛽</div>',
+                            icon_size=(22, 22),
+                            icon_anchor=(11, 11),
+                        ),
+                    ).add_to(fuel_group)
+                fuel_group.add_to(m)
+            else:
+                st.caption("⛽ ไม่พบข้อมูลปั๊มน้ำมันตามเส้นทางนี้ในฐานข้อมูล OpenStreetMap")
 
         if show_radar:
             tile_url = get_rain_radar_tile_url()
