@@ -9,6 +9,7 @@ Weather & Route-Based Forecast
   5. ปุ่ม "ตำแหน่งของฉัน" อ้างอิงตำแหน่ง GPS จริงของอุปกรณ์ ใช้เป็นจุด A อัตโนมัติ
 """
 
+import html
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -19,6 +20,101 @@ from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
 st.set_page_config(page_title="Weather & Route-Based Forecast", page_icon="⛅", layout="wide")
+
+# =========================================================================
+# STYLE: ธีมทันสมัย + responsive สำหรับ PC และมือถือ
+# =========================================================================
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+    html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
+
+    /* ปุ่มทุกจุด - โค้งมน มีมิติเมื่อ hover */
+    .stButton>button {
+        border-radius: 10px;
+        font-weight: 600;
+        transition: transform .12s ease, box-shadow .12s ease;
+        border: 1px solid rgba(255,255,255,.08);
+    }
+    .stButton>button:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,.28); }
+
+    /* ช่องกรอกข้อความ */
+    div[data-testid="stTextInput"] input,
+    div[data-baseweb="select"] > div {
+        border-radius: 10px !important;
+    }
+
+    /* แท็บ */
+    .stTabs [data-baseweb="tab-list"] { gap: 6px; }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 10px 10px 0 0;
+        padding: 8px 18px;
+        font-weight: 600;
+    }
+
+    /* ---------- Weather card grid (responsive: auto-fit) ---------- */
+    .weather-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 14px;
+        margin: 6px 0 22px 0;
+    }
+    .weather-card {
+        border-radius: 16px;
+        padding: 16px 18px;
+        border: 1px solid rgba(255,255,255,.09);
+        box-shadow: 0 4px 16px rgba(0,0,0,.22);
+        min-width: 0; /* กัน overflow บนมือถือ */
+    }
+    .weather-card.origin { background: linear-gradient(150deg,#12351f,#0e2718); border-left: 4px solid #2ecc71; }
+    .weather-card.stop   { background: linear-gradient(150deg,#3a2f12,#2a220e); border-left: 4px solid #f5a623; }
+    .weather-card.auto   { background: linear-gradient(150deg,#2a2a3a,#1e1e2a); border-left: 4px solid #7c93f0; }
+    .weather-card.dest   { background: linear-gradient(150deg,#2a1414,#1f0f0f); border-left: 4px solid #e74c3c; }
+
+    .weather-card h4 { margin: 0 0 8px 0; font-size: 15px; font-weight: 700; }
+    .weather-card .wc-loc  { font-size: 13px; opacity: .9; margin-bottom: 2px; }
+    .weather-card .wc-eta  { font-size: 12px; opacity: .65; margin-bottom: 10px; }
+    .weather-card .wc-row {
+        display: flex; justify-content: space-between; align-items: center;
+        font-size: 13px; padding: 5px 0; border-top: 1px dashed rgba(255,255,255,.1);
+    }
+    .rain-badge {
+        display: inline-block; padding: 2px 9px; border-radius: 20px;
+        font-size: 11px; font-weight: 700;
+    }
+    .rain-low  { background: #1e5631; color: #8ef0ae; }
+    .rain-mid  { background: #5c4a12; color: #ffd873; }
+    .rain-high { background: #5c1a1a; color: #ff9d9d; }
+
+    /* Banner แจ้งเตือน/สรุป */
+    .route-banner, .rain-alert {
+        border-radius: 14px;
+        padding: 14px 20px;
+        margin-bottom: 16px;
+        font-size: 14px;
+        line-height: 1.6;
+    }
+    .route-banner { background: linear-gradient(120deg,#132a1e,#0d1f16); border: 1px solid #1f5c3d; }
+    .rain-alert   { background: linear-gradient(120deg,#2a1414,#1f0f0f); border: 1px solid #7a2e2e; }
+    .rain-alert ul { margin: 8px 0 0 0; padding-left: 20px; }
+    .rain-alert li { margin: 4px 0; }
+
+    /* มือถือ: ลด padding/ font ลงนิดหน่อยให้ไม่รู้สึกอัดแน่นเกินไป */
+    @media (max-width: 640px) {
+        .weather-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+        .weather-card { padding: 12px 14px; }
+        .weather-card h4 { font-size: 13.5px; }
+        .route-banner, .rain-alert { padding: 12px 14px; font-size: 13px; }
+    }
+    @media (max-width: 400px) {
+        .weather-grid { grid-template-columns: 1fr; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # =========================================================================
 # 0. TIMEZONE ตามอุปกรณ์ผู้ใช้ (ฟีเจอร์ 3)
@@ -171,6 +267,35 @@ def interpret_weather_code(code):
     elif code in [95, 96, 99]:
         return "พายุฝนฟ้าคะนอง 🌩️"
     return "สภาพอากาศทั่วไป 🌤️"
+
+
+def _rain_badge_class(prob: int) -> str:
+    if prob >= 60:
+        return "rain-high"
+    if prob >= 30:
+        return "rain-mid"
+    return "rain-low"
+
+
+def render_weather_card(kind: str, icon: str, title: str, location: str, eta_label: str, weather: dict) -> str:
+    """สร้าง HTML การ์ดพยากรณ์อากาศ 1 ใบ (kind: origin/stop/auto/dest)
+    หมายเหตุ: ต้องคืนค่าเป็น HTML บรรทัดเดียว (ไม่มี newline/บรรทัดว่างคั่นระหว่างแท็ก)
+    เพราะเมื่อนำการ์ดหลายใบมาต่อกัน (join) ก่อนส่งให้ st.markdown ครั้งเดียว
+    หากมีบรรทัดที่มีแต่ช่องว่างคั่นอยู่ Markdown parser จะตีความว่า HTML block จบแล้ว
+    แล้วแสดงเนื้อหาถัดไปเป็น code block (ข้อความดิบ) แทนการ render เป็น HTML จริง
+    """
+    badge_cls = _rain_badge_class(weather["prob"])
+    return (
+        f'<div class="weather-card {kind}">'
+        f'<h4>{icon} {html.escape(str(title))}</h4>'
+        f'<div class="wc-loc">📍 {html.escape(str(location))}</div>'
+        f'<div class="wc-eta">⏰ {html.escape(str(eta_label))}</div>'
+        f'<div class="wc-row"><span>สภาพอากาศ</span><span>{interpret_weather_code(weather["code"])}</span></div>'
+        f'<div class="wc-row"><span>อุณหภูมิ</span><span>{weather["temp"]}°C</span></div>'
+        f'<div class="wc-row"><span>โอกาสฝนตก</span>'
+        f'<span class="rain-badge {badge_cls}">{weather["prob"]}%</span></div>'
+        f"</div>"
+    )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -493,36 +618,51 @@ with tab2:
         selected_route = next(r for r in s_data["routes"] if r["label"] == selected_label)
         stop_coords = s_data["stop_coords"]
 
-        # --- คำนวณ ETA ของแต่ละจุดแวะที่ผู้ใช้กำหนดเอง (แม่นยำกว่า sampling เพราะอิงระยะสะสมจริงจาก OSRM) ---
-        waypoints = []
-        if stop_coords:
-            for i, sc in enumerate(stop_coords):
-                cum_km = selected_route["leg_cum_km"][i] if i < len(selected_route["leg_cum_km"]) else 0
-                travel_hours = cum_km / selected_route["avg_speed_kmh"]
-                eta_time = now_local() + timedelta(hours=travel_hours)
-                waypoints.append(
-                    {
-                        "lat": sc["lat"],
-                        "lon": sc["lon"],
-                        "km_marker": round(cum_km, 1),
-                        "location_name": sc["input"],
-                        "eta_time": eta_time,
-                        "eta_str": eta_time.strftime("%H:%M น."),
-                    }
-                )
-        else:
-            # ไม่มีจุดแวะที่ผู้ใช้กำหนด -> ใช้การสุ่มจุดตรวจอากาศอัตโนมัติแบบเดิม
-            waypoints = sample_route_points(
-                selected_route["path"], selected_route["dist_km"], selected_route["avg_speed_kmh"]
+        # --- จุดแวะที่ผู้ใช้กำหนดเอง (แม่นยำ อิงระยะสะสมจริงจาก OSRM) ---
+        user_waypoints = []
+        for i, sc in enumerate(stop_coords):
+            cum_km = selected_route["leg_cum_km"][i] if i < len(selected_route["leg_cum_km"]) else 0
+            travel_hours = cum_km / selected_route["avg_speed_kmh"]
+            eta_time = now_local() + timedelta(hours=travel_hours)
+            user_waypoints.append(
+                {
+                    "lat": sc["lat"],
+                    "lon": sc["lon"],
+                    "km_marker": round(cum_km, 1),
+                    "location_name": sc["input"],
+                    "eta_time": eta_time,
+                    "eta_str": eta_time.strftime("%H:%M น."),
+                    "source": "stop",
+                    "icon": "📌",
+                }
             )
+
+        # --- จุดตรวจอากาศอัตโนมัติทุก ~150 กม. (คำนวณเสมอ ไม่ว่าจะมีจุดแวะหรือไม่ - แก้บั๊กเดิม) ---
+        auto_waypoints_raw = sample_route_points(
+            selected_route["path"], selected_route["dist_km"], selected_route["avg_speed_kmh"]
+        )
+        for wp in auto_waypoints_raw:
+            wp["source"] = "auto"
+            wp["icon"] = "🕐"
+
+        # รวมสองชุดเข้าด้วยกัน โดยตัดจุดอัตโนมัติที่อยู่ใกล้จุดแวะที่ผู้ใช้กำหนดเกินไป (<20 กม.) ทิ้ง กันการ์ดซ้ำ
+        waypoints = list(user_waypoints)
+        for ap in auto_waypoints_raw:
+            if all(abs(ap["km_marker"] - uw["km_marker"]) > 20 for uw in user_waypoints):
+                waypoints.append(ap)
+        waypoints.sort(key=lambda w: w["km_marker"])
 
         total_hours = selected_route["dist_km"] / selected_route["avg_speed_kmh"]
         dest_eta = now_local() + timedelta(hours=total_hours)
         w_b = get_weather(s_data["lat_b"], s_data["lon_b"], target_time=dest_eta)
 
-        st.success(
-            f"📍 โหมด: **{s_data['profile_label']}** | ระยะทาง: **{selected_route['dist_km']} กม.** | "
-            f"เวลาเดินทางโดยประมาณ: **{selected_route['time_str']}**"
+        st.markdown(
+            f'<div class="route-banner">'
+            f"📍 โหมด: <b>{html.escape(s_data['profile_label'])}</b> &nbsp;|&nbsp; "
+            f"ระยะทาง: <b>{selected_route['dist_km']} กม.</b> &nbsp;|&nbsp; "
+            f"เวลาเดินทางโดยประมาณ: <b>{selected_route['time_str']}</b>"
+            f"</div>",
+            unsafe_allow_html=True,
         )
 
         # ดึงอากาศของทุกจุดแวะ "ครั้งเดียว" แล้วใช้ซ้ำทั้งส่วนแจ้งเตือนและการ์ด (ฟีเจอร์ 4 - ลดการยิง API ซ้ำ)
@@ -545,46 +685,48 @@ with tab2:
             )
 
         if rain_warnings:
-            warning_msg = "  \n".join([f"• {w}" for w in rain_warnings])
-            st.error(
-                "⚠️ **แจ้งเตือนสภาพอากาศบนเส้นทาง:**  \n"
-                f"พบพื้นที่เสี่ยงฝนตกหนักระหว่างเดินทางตามเวลาที่คาดว่าจะไปถึง:  \n{warning_msg}"
+            warning_items = "".join([f"<li>{html.escape(w)}</li>" for w in rain_warnings])
+            st.markdown(
+                f'<div class="rain-alert">'
+                f"⚠️ <b>แจ้งเตือนสภาพอากาศบนเส้นทาง</b><br>"
+                f"พบพื้นที่เสี่ยงฝนตกหนักระหว่างเดินทางตามเวลาที่คาดว่าจะไปถึง:"
+                f"<ul>{warning_items}</ul>"
+                f"</div>",
+                unsafe_allow_html=True,
             )
 
-        # --- การ์ดแสดงผล ---
-        total_card_cols = 2 + len(waypoints)
-        cols = st.columns(total_card_cols)
+        # --- การ์ดแสดงผล (responsive grid การ์ดเดียว ไม่ใช้ st.columns ตายตัวเหมือนเดิม) ---
+        cards_html = []
 
         if s_data["w_a"]:
-            with cols[0]:
-                st.info(
-                    f"🟢 **ต้นทาง**\n\n📍 {s_data['origin']}\n\n⏰ ออกเดินทางตอนนี้ "
-                    f"({now_local().strftime('%H:%M')} น.)\n\n"
-                    f"- สภาพอากาศ: {interpret_weather_code(s_data['w_a']['code'])}\n"
-                    f"- อุณหภูมิ: {s_data['w_a']['temp']}°C\n"
-                    f"- โอกาสฝนตก: {s_data['w_a']['prob']}%"
+            cards_html.append(
+                render_weather_card(
+                    "origin", "🟢", "ต้นทาง", s_data["origin"],
+                    f"ออกเดินทางตอนนี้ ({now_local().strftime('%H:%M')} น.)", s_data["w_a"],
                 )
+            )
 
-        for idx, (wp, w_wp) in enumerate(waypoint_weather):
+        for wp, w_wp in waypoint_weather:
             if w_wp:
-                with cols[idx + 1]:
-                    st.warning(
-                        f"🟡 **กม.ที่ {wp['km_marker']}**\n\n📍 {wp['location_name']}\n\n"
-                        f"⏰ ถึงประมาณ {wp['eta_str']}\n\n"
-                        f"- สภาพอากาศ: {interpret_weather_code(w_wp['code'])}\n"
-                        f"- อุณหภูมิ: {w_wp['temp']}°C\n"
-                        f"- โอกาสฝนตก: {w_wp['prob']}%"
+                card_kind = "stop" if wp.get("source") == "stop" else "auto"
+                title = wp["location_name"] if wp.get("source") == "stop" else f"กม.ที่ {wp['km_marker']}"
+                sub_location = wp["location_name"] if wp.get("source") == "stop" else wp["location_name"]
+                cards_html.append(
+                    render_weather_card(
+                        card_kind, wp.get("icon", "📌"), title, f"กม.ที่ {wp['km_marker']} • {sub_location}",
+                        f"ถึงประมาณ {wp['eta_str']}", w_wp,
                     )
+                )
 
         if w_b:
-            with cols[-1]:
-                st.info(
-                    f"🏁 **ปลายทาง**\n\n📍 {s_data['dest']}\n\n"
-                    f"⏰ ถึงประมาณ {dest_eta.strftime('%H:%M น.')}\n\n"
-                    f"- สภาพอากาศ: {interpret_weather_code(w_b['code'])}\n"
-                    f"- อุณหภูมิ: {w_b['temp']}°C\n"
-                    f"- โอกาสฝนตก: {w_b['prob']}%"
+            cards_html.append(
+                render_weather_card(
+                    "dest", "🏁", "ปลายทาง", s_data["dest"],
+                    f"ถึงประมาณ {dest_eta.strftime('%H:%M น.')}", w_b,
                 )
+            )
+
+        st.markdown(f'<div class="weather-grid">{"".join(cards_html)}</div>', unsafe_allow_html=True)
 
         # --- แผนที่ ---
         st.subheader("🗺️ แผนที่เส้นทาง")
