@@ -889,6 +889,46 @@ with tab2:
             unsafe_allow_html=True,
         )
 
+        # --- เครื่องคำนวณค่าน้ำมันโดยประมาณ ---
+        if travel_mode == "foot":
+            pass  # โหมดเดินเท้าไม่ใช้น้ำมัน ไม่ต้องแสดงเครื่องคำนวณ
+        else:
+            with st.expander("⛽ ประมาณการค่าน้ำมันของทริปนี้", expanded=True):
+                default_efficiency = 12.0 if travel_mode == "driving" else 30.0  # กม./ลิตร (รถยนต์ / มอเตอร์ไซค์)
+                col_f1, col_f2, col_f3 = st.columns(3)
+                with col_f1:
+                    fuel_price = st.number_input(
+                        "ราคาน้ำมัน (บาท/ลิตร)", min_value=0.0, value=33.0, step=0.5, key="fuel_price_input"
+                    )
+                with col_f2:
+                    fuel_efficiency = st.number_input(
+                        "อัตราสิ้นเปลือง (กม./ลิตร)",
+                        min_value=0.1,
+                        value=default_efficiency,
+                        step=0.5,
+                        key="fuel_eff_input",
+                    )
+                with col_f3:
+                    round_trip = st.checkbox("🔁 คำนวณแบบไป-กลับ", key="fuel_roundtrip_chk")
+
+                calc_dist = selected_route["dist_km"] * (2 if round_trip else 1)
+                liters = calc_dist / fuel_efficiency if fuel_efficiency > 0 else 0
+                cost = liters * fuel_price
+                trip_word = "ไป-กลับ" if round_trip else "เที่ยวเดียว"
+
+                st.markdown(
+                    f'<div class="route-banner">'
+                    f"⛽ ระยะทาง{trip_word}: <b>{calc_dist:,.1f} กม.</b> &nbsp;|&nbsp; "
+                    f"ใช้น้ำมันประมาณ <b>{liters:,.1f} ลิตร</b> &nbsp;|&nbsp; "
+                    f"ค่าน้ำมันโดยประมาณ <b>{cost:,.0f} บาท</b>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    "หมายเหตุ: เป็นการประมาณการเบื้องต้นเท่านั้น ไม่รวมค่าทางด่วน/ค่าใช้จ่ายอื่น "
+                    "และอัตราสิ้นเปลืองจริงอาจต่างกันตามสภาพจราจร รุ่นรถ และพฤติกรรมการขับขี่"
+                )
+
         # ดึงอากาศของทุกจุดแวะ "ครั้งเดียว" แล้วใช้ซ้ำทั้งส่วนแจ้งเตือนและการ์ด (ฟีเจอร์ 4 - ลดการยิง API ซ้ำ)
         waypoint_weather = [
             (wp, get_weather(wp["lat"], wp["lon"], target_time=wp["eta_time"])) for wp in waypoints
