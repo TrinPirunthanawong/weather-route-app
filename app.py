@@ -7,6 +7,10 @@ Weather & Route-Based Forecast
   3. ตรวจจับ Time zone ของอุปกรณ์ผู้ใช้อัตโนมัติ (ไม่ล็อกตายตัวเป็นเวลาเซิร์ฟเวอร์)
   4. ลดการรีเฟรช/คำนวณซ้ำซ้อน ด้วย st.cache_data + session_state + st_folium(returned_objects=[])
   5. ปุ่ม "ตำแหน่งของฉัน" อ้างอิงตำแหน่ง GPS จริงของอุปกรณ์ ใช้เป็นจุด A อัตโนมัติ
+  6. ปั๊มน้ำมันตามเส้นทาง (Overpass API)
+  7. เลี่ยงทางด่วน/เลี่ยงด่านเก็บเงิน (OpenRouteService)
+  8. เครื่องคำนวณค่าน้ำมันของทริป
+  9. โครงสร้างใหม่: ย้ายอินพุตทั้งหมดไปไว้ที่ sidebar พื้นที่หลักเหลือไว้แสดงผลลัพธ์อย่างเดียว
 """
 
 import html
@@ -31,7 +35,6 @@ st.markdown(
 
     html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
 
-    /* ปุ่มทุกจุด - โค้งมน มีมิติเมื่อ hover */
     .stButton>button {
         border-radius: 10px;
         font-weight: 600;
@@ -40,21 +43,31 @@ st.markdown(
     }
     .stButton>button:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,.28); }
 
-    /* ช่องกรอกข้อความ */
     div[data-testid="stTextInput"] input,
     div[data-baseweb="select"] > div {
         border-radius: 10px !important;
     }
 
-    /* แท็บ */
-    .stTabs [data-baseweb="tab-list"] { gap: 6px; }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 10px 10px 0 0;
-        padding: 8px 18px;
-        font-weight: 600;
-    }
+    button[data-testid="stNumberInputStepUp"],
+    button[data-testid="stNumberInputStepDown"] { display: none; }
+    div[data-testid="stNumberInputContainer"] { border-radius: 10px; }
 
-    /* ---------- Weather card grid (responsive: auto-fit) ---------- */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #12161f, #0b0e14);
+        border-right: 1px solid rgba(255,255,255,.06);
+    }
+    section[data-testid="stSidebar"] .stButton>button { width: 100%; }
+
+    div[role="radiogroup"] label {
+        background: rgba(255,255,255,.035);
+        border: 1px solid rgba(255,255,255,.09);
+        border-radius: 10px;
+        padding: 8px 14px;
+        margin-bottom: 6px;
+        transition: background .12s ease, border-color .12s ease;
+    }
+    div[role="radiogroup"] label:hover { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.2); }
+
     .weather-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -66,7 +79,7 @@ st.markdown(
         padding: 16px 18px;
         border: 1px solid rgba(255,255,255,.09);
         box-shadow: 0 4px 16px rgba(0,0,0,.22);
-        min-width: 0; /* กัน overflow บนมือถือ */
+        min-width: 0;
     }
     .weather-card.origin { background: linear-gradient(150deg,#12351f,#0e2718); border-left: 4px solid #2ecc71; }
     .weather-card.stop   { background: linear-gradient(150deg,#3a2f12,#2a220e); border-left: 4px solid #f5a623; }
@@ -88,25 +101,24 @@ st.markdown(
     .rain-mid  { background: #5c4a12; color: #ffd873; }
     .rain-high { background: #5c1a1a; color: #ff9d9d; }
 
-    /* Banner แจ้งเตือน/สรุป */
-    .route-banner, .rain-alert {
+    .route-banner, .rain-alert, .fuel-banner {
         border-radius: 14px;
         padding: 14px 20px;
         margin-bottom: 16px;
         font-size: 14px;
         line-height: 1.6;
     }
-    .route-banner { background: linear-gradient(120deg,#132a1e,#0d1f16); border: 1px solid #1f5c3d; }
+    .route-banner { background: linear-gradient(120deg,#12283a,#0d1c2e); border: 1px solid #1f4a6e; }
+    .fuel-banner   { background: linear-gradient(120deg,#3a2f12,#2a220e); border: 1px solid #7a5a2e; }
     .rain-alert   { background: linear-gradient(120deg,#2a1414,#1f0f0f); border: 1px solid #7a2e2e; }
     .rain-alert ul { margin: 8px 0 0 0; padding-left: 20px; }
     .rain-alert li { margin: 4px 0; }
 
-    /* มือถือ: ลด padding/ font ลงนิดหน่อยให้ไม่รู้สึกอัดแน่นเกินไป */
     @media (max-width: 640px) {
         .weather-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
         .weather-card { padding: 12px 14px; }
         .weather-card h4 { font-size: 13.5px; }
-        .route-banner, .rain-alert { padding: 12px 14px; font-size: 13px; }
+        .route-banner, .rain-alert, .fuel-banner { padding: 12px 14px; font-size: 13px; }
     }
     @media (max-width: 400px) {
         .weather-grid { grid-template-columns: 1fr; }
@@ -117,12 +129,10 @@ st.markdown(
 )
 
 # =========================================================================
-# 0. TIMEZONE ตามอุปกรณ์ผู้ใช้ (ฟีเจอร์ 3)
+# 0. TIMEZONE ตามอุปกรณ์ผู้ใช้
 # =========================================================================
-# ตรวจจับแค่ครั้งเดียวต่อ session เพื่อไม่ให้ JS call ยิงซ้ำทุครั้งที่มีการ rerun
-# (เป็นส่วนหนึ่งของฟีเจอร์ 4 - ลดงานที่ไม่จำเป็น)
 if "device_tz" not in st.session_state:
-    st.session_state["device_tz"] = "Asia/Bangkok"  # ค่าเริ่มต้นระหว่างรอผลจากเบราว์เซอร์
+    st.session_state["device_tz"] = "Asia/Bangkok"
 if "tz_detected_once" not in st.session_state:
     st.session_state["tz_detected_once"] = False
 
@@ -142,22 +152,11 @@ except Exception:
 
 
 def now_local() -> datetime:
-    """เวลาปัจจุบัน ตาม Time zone ของอุปกรณ์ผู้ใช้งาน (ไม่ใช่เวลาเซิร์ฟเวอร์)"""
     return datetime.now(DEVICE_TZ)
 
 
-st.title("⛅ Weather & Route-Based Forecast")
-st.caption(
-    "ระบบเช็กสภาพอากาศ ณ จุดปัจจุบัน และวิเคราะห์สภาพอากาศตามเส้นทางเดินทางจริงแบบเรียลไทม์  \n"
-    f"🕒 เขตเวลาอ้างอิง: **{st.session_state['device_tz']}** "
-    f"(เวลาขณะนี้ {now_local().strftime('%d/%m/%Y %H:%M')} น.)"
-)
-
-tab1, tab2 = st.tabs(["📍 สภาพอากาศ ณ จุดที่อยู่/ค้นหา", "🚗 เช็กสภาพอากาศระหว่างทาง (A ➔ B)"])
-
-
 # =========================================================================
-# 1. HELPER / CACHED FUNCTIONS  (ฟีเจอร์ 4 - cache ตัดการเรียก API ซ้ำ)
+# 1. HELPER / CACHED FUNCTIONS
 # =========================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_coordinates(place_name: str):
@@ -192,7 +191,6 @@ def get_location_name(lat: float, lon: float) -> str:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _get_weather_raw(lat: float, lon: float):
-    """ดึงข้อมูลดิบจาก Open-Meteo (cache 10 นาที ต่อพิกัด ลดการยิง API ซ้ำ)"""
     url = (
         f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
         f"&current=temperature_2m,weather_code"
@@ -205,7 +203,6 @@ def _get_weather_raw(lat: float, lon: float):
 
 
 def _nearest_hour_index(hourly_times, target_naive_dt):
-    """หา index ของเวลาใน hourly_times ที่ใกล้เคียง target มากที่สุด (กันเคส exact-match ไม่เจอ)"""
     target_str = target_naive_dt.strftime("%Y-%m-%dT%H:00")
     if target_str in hourly_times:
         return hourly_times.index(target_str)
@@ -218,12 +215,6 @@ def _nearest_hour_index(hourly_times, target_naive_dt):
 
 
 def get_weather(lat: float, lon: float, target_time: datetime | None = None):
-    """
-    ดึงสภาพอากาศ ณ พิกัดที่ระบุ
-    target_time: datetime แบบ timezone-aware (เช่นจาก now_local()) หรือ None = เอาค่าปัจจุบัน
-    ภายในจะแปลงเวลาเป็น local-time ของพิกัดนั้น ๆ เอง (ใช้ utc_offset_seconds จาก Open-Meteo)
-    เพื่อความแม่นยำ แม้ผู้ใช้และจุดหมายจะอยู่คนละ time zone กัน
-    """
     try:
         raw = _get_weather_raw(round(lat, 3), round(lon, 3))
     except Exception as e:
@@ -278,12 +269,6 @@ def _rain_badge_class(prob: int) -> str:
 
 
 def render_weather_card(kind: str, icon: str, title: str, location: str, eta_label: str, weather: dict) -> str:
-    """สร้าง HTML การ์ดพยากรณ์อากาศ 1 ใบ (kind: origin/stop/auto/dest)
-    หมายเหตุ: ต้องคืนค่าเป็น HTML บรรทัดเดียว (ไม่มี newline/บรรทัดว่างคั่นระหว่างแท็ก)
-    เพราะเมื่อนำการ์ดหลายใบมาต่อกัน (join) ก่อนส่งให้ st.markdown ครั้งเดียว
-    หากมีบรรทัดที่มีแต่ช่องว่างคั่นอยู่ Markdown parser จะตีความว่า HTML block จบแล้ว
-    แล้วแสดงเนื้อหาถัดไปเป็น code block (ข้อความดิบ) แทนการ render เป็น HTML จริง
-    """
     badge_cls = _rain_badge_class(weather["prob"])
     return (
         f'<div class="weather-card {kind}">'
@@ -299,7 +284,6 @@ def render_weather_card(kind: str, icon: str, title: str, location: str, eta_lab
 
 
 def downsample_path(path: list, max_points: int = 100) -> list:
-    """ลดจำนวนจุดบนเส้นทางลง (เส้นทาง OSRM มีจุดละเอียดมากเกินจำเป็นสำหรับ query ปั๊มน้ำมัน)"""
     n = len(path)
     if n <= max_points:
         return path
@@ -322,17 +306,7 @@ def _chunk_list(lst, n):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_fuel_stations_along_route(sample_coords: tuple, radius_m: int = 3000):
-    """
-    ค้นหาปั๊มน้ำมัน (amenity=fuel) จาก OpenStreetMap ผ่าน Overpass API
-    sample_coords: tuple ของ (lat, lon) ที่สุ่มมาจากเส้นทาง (เว้นระยะเท่า ๆ กัน)
-    radius_m: รัศมี (เมตร) ที่ถือว่า "อยู่ใกล้เส้นทาง" (ค่าเริ่มต้น 3 กม.)
-
-    วิธีการ: แบ่งจุดตัวอย่างเป็นช่วง ๆ (chunk) แล้วสร้าง bounding-box แคบ ๆ ต่อช่วง
-    เพื่อ query กับ Overpass (bbox คำนวณเร็วกว่า "around" หลายจุดมาก จึงไม่ timeout)
-    จากนั้นกรองผลลัพธ์อีกชั้นด้วยระยะทางจริง (haversine) ในฝั่ง Python
-    เพื่อตัดปั๊มที่อยู่ในกรอบสี่เหลี่ยมแต่ไกลจากแนวถนนจริงทิ้งไป
-    """
-    pad_deg = radius_m / 111_000  # แปลงเมตรเป็นองศาคร่าว ๆ สำหรับขยายขอบ bbox
+    pad_deg = radius_m / 111_000
     chunks = _chunk_list(list(sample_coords), 12)
 
     bbox_clauses = []
@@ -377,7 +351,6 @@ def get_fuel_stations_along_route(sample_coords: tuple, radius_m: int = 3000):
         lat, lon = el.get("lat"), el.get("lon")
         if lat is None or lon is None or el.get("id") in seen_ids:
             continue
-        # กรองด้วยระยะทางจริงจากจุดตัวอย่างบนเส้นทาง (ตัดปั๊มที่อยู่มุม bbox แต่ไกลจากถนนจริง)
         min_dist_km = min(_haversine_km(lat, lon, p[0], p[1]) for p in sample_coords)
         if min_dist_km * 1000 <= radius_m:
             seen_ids.add(el.get("id"))
@@ -389,7 +362,6 @@ def get_fuel_stations_along_route(sample_coords: tuple, radius_m: int = 3000):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_rain_radar_tile_url():
-    """ดึง URL เทมเพลตของเฟรมเรดาร์ฝนล่าสุดจาก RainViewer (ฟีเจอร์ 2)"""
     try:
         res = requests.get("https://api.rainviewer.com/public/weather-maps.json", timeout=10).json()
         host = res.get("host", "https://tilecache.rainviewer.com")
@@ -403,7 +375,6 @@ def get_rain_radar_tile_url():
 
 
 def sample_route_points(path, total_dist_km, avg_speed_kmh):
-    """สุ่มจุดตรวจอากาศอัตโนมัติระหว่างทาง (ใช้เมื่อผู้ใช้ไม่ได้กำหนดจุดแวะเอง)"""
     num_coords = len(path)
     if num_coords <= 2:
         return []
@@ -440,13 +411,8 @@ def sample_route_points(path, total_dist_km, avg_speed_kmh):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_route_osrm(coords: tuple, mode: str = "driving"):
-    """
-    coords: tuple ของ (lat, lon) เรียงจาก ต้นทาง -> จุดแวะ(0..n) -> ปลายทาง (>= 2 จุด)
-    หมายเหตุ: OSRM demo server สาธารณะรองรับเฉพาะโปรไฟล์ถนนสำหรับรถยนต์ในการหาเส้นทางจริง
-    ระบบจึงคำนวณ "ระยะทาง/เวลา" ที่แสดงผลใหม่ตามโหมดที่ผู้ใช้เลือกภายหลังจากได้เส้นทางมาแล้ว
-    """
     coord_str = ";".join([f"{lon},{lat}" for lat, lon in coords])
-    allow_alt = "true" if len(coords) == 2 else "false"  # alternatives ใช้ได้แค่กรณี A->B ตรง ๆ
+    allow_alt = "true" if len(coords) == 2 else "false"
     url = (
         f"http://router.project-osrm.org/route/v1/driving/{coord_str}"
         f"?overview=full&geometries=geojson&alternatives={allow_alt}"
@@ -465,7 +431,7 @@ def get_route_osrm(coords: tuple, mode: str = "driving"):
         dist_factor, avg_speed_kmh = 0.95, 80
     elif mode == "foot":
         dist_factor, avg_speed_kmh = 0.85, 3.0
-    else:  # driving
+    else:
         dist_factor, avg_speed_kmh = 1.0, 100
 
     routes_data = []
@@ -483,7 +449,6 @@ def get_route_osrm(coords: tuple, mode: str = "driving"):
         else:
             time_str = f"{total_minutes} นาที"
 
-        # ระยะสะสม (กม.) ณ แต่ละจุดแวะ - ใช้คำนวณ ETA ของจุดแวะที่ผู้ใช้กำหนดเองอย่างแม่นยำ
         leg_cum_km, cum = [], 0.0
         for leg in r.get("legs", []):
             cum += (leg["distance"] / 1000) * dist_factor
@@ -506,14 +471,6 @@ def get_route_osrm(coords: tuple, mode: str = "driving"):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_route_ors(coords: tuple, api_key: str, profile: str = "driving-car", avoid_features: tuple = ()):
-    """
-    เรียก OpenRouteService (ORS) Directions API - ใช้เมื่อผู้ใช้ต้องการเลี่ยงทางด่วน/ด่านเก็บเงิน
-    ซึ่ง OSRM demo server สาธารณะไม่รองรับพารามิเตอร์เหล่านี้
-    coords: tuple ของ (lat, lon) เรียงจากต้นทาง -> จุดแวะ -> ปลายทาง
-    profile: driving-car / cycling-regular / foot-walking
-    avoid_features: เช่น ("highways",) หรือ ("highways","tollways")
-    หมายเหตุ: ORS ฟรี 2,000 requests/วัน ต้องสมัคร API key เอง (ฟรี ไม่ผูกบัตร)
-    """
     coordinates = [[lon, lat] for lat, lon in coords]
     body = {"coordinates": coordinates, "instructions": False}
     if avoid_features:
@@ -541,7 +498,7 @@ def get_route_ors(coords: tuple, api_key: str, profile: str = "driving-car", avo
         return []
 
     feat = features[0]
-    coords_out = feat["geometry"]["coordinates"]  # [lon, lat]
+    coords_out = feat["geometry"]["coordinates"]
     path = [[c[1], c[0]] for c in coords_out]
 
     summary = feat["properties"]["summary"]
@@ -579,16 +536,127 @@ def get_route_ors(coords: tuple, api_key: str, profile: str = "driving-car", avo
 
 
 # =========================================================================
-# 2. TAB 1 - จุดเดียว
+# 2. SIDEBAR - อินพุตทั้งหมดมารวมที่นี่ พื้นที่หลักเหลือไว้แสดงผลลัพธ์อย่างเดียว
 # =========================================================================
-with tab1:
-    st.header("🔍 ค้นหาสภาพอากาศตามพื้นที่")
-    with st.form("single_form"):
-        place_input = st.text_input(
-            "พิมพ์ชื่อเขต/อำเภอ หรือจังหวัด", value="", placeholder="เช่น กรุงเทพมหานคร"
-        )
-        submit_single = st.form_submit_button("เช็กสภาพอากาศ")
+with st.sidebar:
+    st.markdown("### ⛅ Weather & Route")
+    st.caption("พยากรณ์อากาศแบบเรียลไทม์ ทั้งจุดเดียวและตามเส้นทางเดินทาง")
 
+    page = st.radio(
+        "โหมดการใช้งาน",
+        ["📍 สภาพอากาศจุดเดียว", "🚗 เส้นทาง A → B"],
+        label_visibility="collapsed",
+        key="page_select",
+    )
+    st.divider()
+
+    if page == "📍 สภาพอากาศจุดเดียว":
+        place_input = st.text_input(
+            "พิมพ์ชื่อเขต/อำเภอ หรือจังหวัด", value="", placeholder="เช่น กรุงเทพมหานคร", key="place_input"
+        )
+        submit_single = st.button("🔍 เช็กสภาพอากาศ", type="primary", use_container_width=True)
+        show_radar_t1 = st.checkbox("🌧️ แสดงเรดาร์ฝนบนแผนที่", value=True, key="radar_tab1")
+
+    else:
+        st.session_state.setdefault("stop_ids", [])
+        st.session_state.setdefault("stop_counter", 0)
+        st.session_state.setdefault("awaiting_geo", False)
+        st.session_state.setdefault("origin_coords_override", None)
+        st.session_state.setdefault("origin_override_label", None)
+
+        geo_status_msg = None
+        if st.session_state["awaiting_geo"]:
+            geo = get_geolocation()
+            if geo and geo.get("coords"):
+                lat_g = geo["coords"]["latitude"]
+                lon_g = geo["coords"]["longitude"]
+                label = get_location_name(lat_g, lon_g)
+                st.session_state["origin_input"] = label
+                st.session_state["origin_coords_override"] = (lat_g, lon_g)
+                st.session_state["origin_override_label"] = label
+                st.session_state["awaiting_geo"] = False
+                geo_status_msg = ("success", f"📍 ตั้งจุด A เป็นตำแหน่งปัจจุบัน: {label}")
+            else:
+                geo_status_msg = ("info", "🔄 กำลังขอสิทธิ์เข้าถึงตำแหน่ง กรุณากด **อนุญาต** ที่เบราว์เซอร์")
+
+        origin_input = st.text_input(
+            "🟢 จุดเริ่มต้น (A)", key="origin_input", placeholder="เช่น ธนาคารแห่งประเทศไทย"
+        )
+        locate_clicked = st.button("📍 ใช้ตำแหน่งของฉัน", key="locate_btn", use_container_width=True)
+        dest_input = st.text_input("🔴 ปลายทาง (B)", key="dest_input", placeholder="เช่น เชียงราย")
+
+        mode_options = {"🚗 รถยนต์": "driving", "🏍️ มอเตอร์ไซค์/จักรยาน": "bike", "🚶 เดิน": "foot"}
+        selected_mode_label = st.selectbox("รูปแบบการเดินทาง", options=list(mode_options.keys()), index=0)
+        travel_mode = mode_options[selected_mode_label]
+
+        if geo_status_msg:
+            kind, msg = geo_status_msg
+            (st.success if kind == "success" else st.info)(msg)
+
+        if locate_clicked:
+            st.session_state["awaiting_geo"] = True
+            st.rerun()
+
+        default_ors_key = ""
+        try:
+            default_ors_key = st.secrets.get("ORS_API_KEY", "")
+        except Exception:
+            default_ors_key = ""
+
+        with st.expander("⚙️ เลี่ยงทางด่วน / เลี่ยงด่านเก็บเงิน"):
+            if default_ors_key:
+                st.caption("✅ ระบบตั้งค่า OpenRouteService ไว้ให้แล้ว เลือกติ๊กด้านล่างได้เลย")
+                ors_api_key = default_ors_key
+            else:
+                st.caption(
+                    "ต้องใช้ [OpenRouteService](https://openrouteservice.org/dev/#/signup) "
+                    "(ฟรี 2,000 requests/วัน) ใส่ API key ด้านล่าง"
+                )
+                ors_api_key = st.text_input(
+                    "ORS API Key", value="", type="password", key="ors_api_key_input",
+                    placeholder="วาง API key ตรงนี้",
+                )
+            avoid_highway = st.checkbox("🛣️ เลี่ยงทางด่วน/มอเตอร์เวย์", key="avoid_highway_chk")
+            avoid_toll = st.checkbox("💰 เลี่ยงด่านเก็บเงิน", key="avoid_toll_chk")
+            use_ors = bool(ors_api_key.strip()) and (avoid_highway or avoid_toll)
+            if (avoid_highway or avoid_toll) and not ors_api_key.strip():
+                st.warning("⚠️ ยังไม่มี ORS API Key จะใช้เส้นทางปกติแทน")
+            st.caption('หมายเหตุ: "เลี่ยงเมือง" ยังไม่มีในบริการฟรีของ ORS')
+
+        st.markdown("**🟠 จุดแวะระหว่างทาง (ถ้ามี)**")
+        for sid in list(st.session_state["stop_ids"]):
+            scol1, scol2 = st.columns([4, 1])
+            with scol1:
+                st.text_input(
+                    "จุดแวะ", key=f"stop_{sid}", placeholder="เช่น นครสวรรค์", label_visibility="collapsed",
+                )
+            with scol2:
+                if st.button("🗑️", key=f"remove_{sid}"):
+                    st.session_state["stop_ids"].remove(sid)
+                    st.session_state.pop(f"stop_{sid}", None)
+                    st.rerun()
+
+        if st.button("➕ เพิ่มจุดแวะ", use_container_width=True):
+            st.session_state["stop_counter"] += 1
+            st.session_state["stop_ids"].append(st.session_state["stop_counter"])
+            st.rerun()
+
+        st.divider()
+        submit_route = st.button("🔍 ค้นหาเส้นทาง & สภาพอากาศ", type="primary", use_container_width=True)
+
+    st.divider()
+    st.caption(
+        f"🕒 เขตเวลา: **{st.session_state['device_tz']}**  \n"
+        f"เวลาขณะนี้ {now_local().strftime('%d/%m/%Y %H:%M')} น."
+    )
+
+
+# =========================================================================
+# 3. MAIN AREA - แสดงผลลัพธ์ตามโหมดที่เลือกใน sidebar
+# =========================================================================
+st.title("⛅ Weather & Route-Based Forecast")
+
+if page == "📍 สภาพอากาศจุดเดียว":
     if submit_single:
         if place_input.strip():
             lat, lon, name = get_coordinates(place_input)
@@ -599,18 +667,15 @@ with tab1:
                     c1.metric("🌡️ อุณหภูมิปัจจุบัน", f"{w['temp']} °C")
                     c2.metric("📊 สภาพอากาศ", interpret_weather_code(w["code"]))
                     c3.metric("🌧️ โอกาสฝนตก", f"{w['prob']} %")
-
                     st.session_state["tab1_point"] = {"lat": lat, "lon": lon, "name": name}
             else:
                 st.session_state.pop("tab1_point", None)
                 st.error("ไม่พบข้อมูลสถานที่ดังกล่าว")
         else:
-            st.warning("กรุณากรอกชื่อสถานที่ที่ต้องการค้นหา")
+            st.warning("กรุณากรอกชื่อสถานที่ที่ต้องการค้นหา (แถบด้านซ้าย)")
 
-    # แผนที่ขนาดเล็ก + เรดาร์ฝน สำหรับจุดที่ค้นหาล่าสุด
     if "tab1_point" in st.session_state:
         p = st.session_state["tab1_point"]
-        show_radar_t1 = st.checkbox("🌧️ แสดงเรดาร์ฝนล่าสุดบนแผนที่", value=True, key="radar_tab1")
         m1 = folium.Map(location=[p["lat"], p["lon"]], zoom_start=9)
         folium.Marker([p["lat"], p["lon"]], popup=p["name"], icon=folium.Icon(color="blue")).add_to(m1)
         if show_radar_t1:
@@ -622,140 +687,17 @@ with tab1:
             else:
                 st.caption("⚠️ ไม่สามารถโหลดข้อมูลเรดาร์ฝนได้ในขณะนี้")
         folium.LayerControl(collapsed=True).add_to(m1)
-        st_folium(m1, width=1100, height=400, key="tab1_map", returned_objects=[])
+        st_folium(m1, width=1100, height=450, key="tab1_map", returned_objects=[])
+    else:
+        st.info('👈 พิมพ์ชื่อสถานที่ในแถบด้านซ้าย แล้วกด "เช็กสภาพอากาศ" เพื่อเริ่มต้น')
 
-
-# =========================================================================
-# 3. TAB 2 - เส้นทาง A -> (จุดแวะ) -> B
-# =========================================================================
-with tab2:
-    st.header("🛣️ พยากรณ์สภาพอากาศตามเส้นทาง (A ➔ B)")
-
-    # --- session state defaults ---
-    st.session_state.setdefault("stop_ids", [])
-    st.session_state.setdefault("stop_counter", 0)
-    st.session_state.setdefault("awaiting_geo", False)
-    st.session_state.setdefault("origin_coords_override", None)
-    st.session_state.setdefault("origin_override_label", None)
-
-    # --- ปุ่ม "ตำแหน่งของฉัน" (ฟีเจอร์ 5) ---
-    # สำคัญ: ต้องประมวลผลผลลัพธ์ GPS และตั้งค่า session_state["origin_input"] ให้เสร็จ
-    # ก่อนที่จะสร้าง widget text_input(key="origin_input") ด้านล่าง มิฉะนั้น Streamlit
-    # จะโยน StreamlitAPIException เพราะห้ามแก้ค่า session_state ของ widget ที่ instantiate ไปแล้ว
-    geo_status_msg = None
-    if st.session_state["awaiting_geo"]:
-        geo = get_geolocation()
-        if geo and geo.get("coords"):
-            lat_g = geo["coords"]["latitude"]
-            lon_g = geo["coords"]["longitude"]
-            label = get_location_name(lat_g, lon_g)
-            st.session_state["origin_input"] = label  # ตั้งค่าได้ เพราะยังไม่มี widget key นี้ในรันนี้
-            st.session_state["origin_coords_override"] = (lat_g, lon_g)
-            st.session_state["origin_override_label"] = label
-            st.session_state["awaiting_geo"] = False
-            geo_status_msg = ("success", f"📍 ตั้งจุดเริ่มต้น (A) เป็นตำแหน่งปัจจุบัน: {label}")
-        else:
-            geo_status_msg = (
-                "info",
-                "🔄 กำลังขอสิทธิ์เข้าถึงตำแหน่งจากเบราว์เซอร์ กรุณากด **อนุญาต (Allow)** ที่แถบแจ้งเตือนของเบราว์เซอร์",
-            )
-
-    col_a, col_b, col_mode = st.columns([2, 2, 1.5])
-    with col_a:
-        sub_a1, sub_a2 = st.columns([3, 1.4])
-        with sub_a1:
-            origin_input = st.text_input(
-                "🟢 จุดเริ่มต้น (A)", key="origin_input", placeholder="เช่น ธนาคารแห่งประเทศไทย"
-            )
-        with sub_a2:
-            st.markdown("&nbsp;")
-            locate_clicked = st.button("📍 ตำแหน่งของฉัน", key="locate_btn", use_container_width=True)
-    with col_b:
-        dest_input = st.text_input("🔴 ปลายทาง (B)", key="dest_input", placeholder="เช่น เชียงราย")
-    with col_mode:
-        mode_options = {"🚗 รถยนต์": "driving", "🏍️ มอเตอร์ไซค์/จักรยาน": "bike", "🚶 เดิน": "foot"}
-        selected_mode_label = st.selectbox("รูปแบบการเดินทาง", options=list(mode_options.keys()), index=0)
-        travel_mode = mode_options[selected_mode_label]
-
-    # แสดงสถานะการขอตำแหน่ง (ใต้แถวช่องกรอก เพื่อไม่ต้องรีรันซ้ำเหมือนโค้ดเดิม)
-    if geo_status_msg:
-        kind, msg = geo_status_msg
-        (st.success if kind == "success" else st.info)(msg)
-
-    # ปุ่มถูกกดในรันนี้ -> ตั้งสถานะรอผล แล้วรีรันหนึ่งครั้งเพื่อให้ get_geolocation() เริ่มทำงาน
-    if locate_clicked:
-        st.session_state["awaiting_geo"] = True
-        st.rerun()
-
-    # --- ตัวเลือกเส้นทางขั้นสูง: เลี่ยงทางด่วน / เลี่ยงด่านเก็บเงิน (ผ่าน OpenRouteService) ---
-    default_ors_key = ""
-    try:
-        default_ors_key = st.secrets.get("ORS_API_KEY", "")
-    except Exception:
-        default_ors_key = ""
-
-    with st.expander("⚙️ ตัวเลือกเส้นทางขั้นสูง: เลี่ยงทางด่วน / เลี่ยงด่านเก็บเงิน"):
-        if default_ors_key:
-            # ตั้งค่า ORS_API_KEY ไว้ในระบบ (secrets.toml) แล้ว - ผู้ใช้ทุกคนใช้ร่วมกันได้เลย ไม่ต้องกรอกเอง
-            st.caption("✅ ระบบตั้งค่า OpenRouteService ไว้ให้แล้ว เลือกติ๊กด้านล่างได้เลย ไม่ต้องกรอก API key")
-            ors_api_key = default_ors_key
-        else:
-            st.caption(
-                "OSRM (เส้นทางปกติที่ใช้อยู่) ไม่รองรับการเลี่ยงทางด่วน/ด่านเก็บเงิน ฟีเจอร์นี้จึงต้องสลับไปใช้ "
-                "**OpenRouteService (ORS)** แทน สมัครฟรีได้ที่ "
-                "[openrouteservice.org/dev](https://openrouteservice.org/dev/#/signup) "
-                "(ฟรี 2,000 requests/วัน ไม่ต้องผูกบัตร) แล้วนำ API key มาใส่ด้านล่าง"
-            )
-            ors_api_key = st.text_input(
-                "ORS API Key", value="", type="password", key="ors_api_key_input",
-                placeholder="วาง API key ที่ได้จาก OpenRouteService ตรงนี้",
-            )
-        col_avoid1, col_avoid2 = st.columns(2)
-        with col_avoid1:
-            avoid_highway = st.checkbox("🛣️ เลี่ยงทางด่วน/มอเตอร์เวย์", key="avoid_highway_chk")
-        with col_avoid2:
-            avoid_toll = st.checkbox("💰 เลี่ยงด่านเก็บเงิน", key="avoid_toll_chk")
-        use_ors = bool(ors_api_key.strip()) and (avoid_highway or avoid_toll)
-        if (avoid_highway or avoid_toll) and not ors_api_key.strip():
-            st.warning("⚠️ ยังไม่มี ORS API Key ในระบบ ระบบจะใช้เส้นทางปกติ (ไม่เลี่ยงทางด่วน/ด่านเก็บเงิน) แทน")
-        st.caption(
-            "หมายเหตุ: \"เลี่ยงเมือง/ตัวเมือง\" ยังไม่มีให้ในบริการฟรีของ ORS โดยตรง "
-            "(รองรับแค่ระดับ ทางด่วน/ด่านเก็บเงิน/เรือข้ามฟาก เท่านั้น)"
-        )
-
-
-
-    # --- จุดแวะระหว่างทาง (ฟีเจอร์ 1) ---
-    st.markdown("**🟠 จุดแวะระหว่างทาง (ถ้ามี)**")
-    for sid in list(st.session_state["stop_ids"]):
-        scol1, scol2 = st.columns([6, 1])
-        with scol1:
-            st.text_input(
-                "จุดแวะ",
-                key=f"stop_{sid}",
-                placeholder="เช่น นครสวรรค์",
-                label_visibility="collapsed",
-            )
-        with scol2:
-            if st.button("🗑️ ลบ", key=f"remove_{sid}"):
-                st.session_state["stop_ids"].remove(sid)
-                st.session_state.pop(f"stop_{sid}", None)
-                st.rerun()
-
-    if st.button("➕ เพิ่มจุดแวะ"):
-        st.session_state["stop_counter"] += 1
-        st.session_state["stop_ids"].append(st.session_state["stop_counter"])
-        st.rerun()
-
-    submit_route = st.button("🔍 ค้นหาเส้นทาง & สภาพอากาศ", type="primary")
-
+else:
     if submit_route:
         if not origin_input.strip() or not dest_input.strip():
             st.session_state.pop("search_data", None)
-            st.warning("⚠️ กรุณากรอกทั้งจุดเริ่มต้น (จุด A) และจุดหมายปลายทาง (จุด B) ให้ครบถ้วนครับ")
+            st.warning("⚠️ กรุณากรอกทั้งจุดเริ่มต้น (A) และจุดหมายปลายทาง (B) ในแถบด้านซ้ายให้ครบถ้วนครับ")
         else:
             with st.spinner(f"กำลังคำนวณเส้นทาง [{selected_mode_label}] และดึงข้อมูลสภาพอากาศ..."):
-                # จุด A: ใช้พิกัด GPS จริงถ้าเพิ่งกดปุ่ม "ตำแหน่งของฉัน" มา และข้อความยังตรงกับตอนตั้งค่า
                 if (
                     st.session_state["origin_coords_override"]
                     and origin_input.strip() == st.session_state["origin_override_label"]
@@ -767,7 +709,6 @@ with tab2:
 
                 lat_b, lon_b, name_b = get_coordinates(dest_input)
 
-                # จุดแวะ: geocode ทุกจุดที่ผู้ใช้กรอก (ข้ามช่องว่าง)
                 stop_texts = [
                     st.session_state.get(f"stop_{sid}", "").strip() for sid in st.session_state["stop_ids"]
                 ]
@@ -833,7 +774,6 @@ with tab2:
                     st.session_state.pop("search_data", None)
                     st.error("ไม่พบพิกัดของสถานที่ที่ระบุ กรุณาตรวจสอบชื่ออีกครั้ง")
 
-    # --- แสดงผล ---
     if "search_data" in st.session_state and origin_input.strip() and dest_input.strip():
         s_data = st.session_state["search_data"]
 
@@ -842,7 +782,6 @@ with tab2:
         selected_route = next(r for r in s_data["routes"] if r["label"] == selected_label)
         stop_coords = s_data["stop_coords"]
 
-        # --- จุดแวะที่ผู้ใช้กำหนดเอง (แม่นยำ อิงระยะสะสมจริงจาก OSRM) ---
         user_waypoints = []
         for i, sc in enumerate(stop_coords):
             cum_km = selected_route["leg_cum_km"][i] if i < len(selected_route["leg_cum_km"]) else 0
@@ -861,7 +800,6 @@ with tab2:
                 }
             )
 
-        # --- จุดตรวจอากาศอัตโนมัติทุก ~150 กม. (คำนวณเสมอ ไม่ว่าจะมีจุดแวะหรือไม่ - แก้บั๊กเดิม) ---
         auto_waypoints_raw = sample_route_points(
             selected_route["path"], selected_route["dist_km"], selected_route["avg_speed_kmh"]
         )
@@ -869,7 +807,6 @@ with tab2:
             wp["source"] = "auto"
             wp["icon"] = "🕐"
 
-        # รวมสองชุดเข้าด้วยกัน โดยตัดจุดอัตโนมัติที่อยู่ใกล้จุดแวะที่ผู้ใช้กำหนดเกินไป (<20 กม.) ทิ้ง กันการ์ดซ้ำ
         waypoints = list(user_waypoints)
         for ap in auto_waypoints_raw:
             if all(abs(ap["km_marker"] - uw["km_marker"]) > 20 for uw in user_waypoints):
@@ -889,12 +826,9 @@ with tab2:
             unsafe_allow_html=True,
         )
 
-        # --- เครื่องคำนวณค่าน้ำมันโดยประมาณ ---
-        if travel_mode == "foot":
-            pass  # โหมดเดินเท้าไม่ใช้น้ำมัน ไม่ต้องแสดงเครื่องคำนวณ
-        else:
+        if travel_mode != "foot":
             with st.expander("⛽ ประมาณการค่าน้ำมันของทริปนี้", expanded=True):
-                default_efficiency = 12.0 if travel_mode == "driving" else 30.0  # กม./ลิตร (รถยนต์ / มอเตอร์ไซค์)
+                default_efficiency = 12.0 if travel_mode == "driving" else 30.0
                 col_f1, col_f2, col_f3 = st.columns(3)
                 with col_f1:
                     fuel_price = st.number_input(
@@ -903,12 +837,10 @@ with tab2:
                 with col_f2:
                     fuel_efficiency = st.number_input(
                         "อัตราสิ้นเปลือง (กม./ลิตร)",
-                        min_value=0.1,
-                        value=default_efficiency,
-                        step=0.5,
-                        key="fuel_eff_input",
+                        min_value=0.1, value=default_efficiency, step=0.5, key="fuel_eff_input",
                     )
                 with col_f3:
+                    st.markdown("&nbsp;")
                     round_trip = st.checkbox("🔁 คำนวณแบบไป-กลับ", key="fuel_roundtrip_chk")
 
                 calc_dist = selected_route["dist_km"] * (2 if round_trip else 1)
@@ -917,7 +849,7 @@ with tab2:
                 trip_word = "ไป-กลับ" if round_trip else "เที่ยวเดียว"
 
                 st.markdown(
-                    f'<div class="route-banner">'
+                    f'<div class="fuel-banner">'
                     f"⛽ ระยะทาง{trip_word}: <b>{calc_dist:,.1f} กม.</b> &nbsp;|&nbsp; "
                     f"ใช้น้ำมันประมาณ <b>{liters:,.1f} ลิตร</b> &nbsp;|&nbsp; "
                     f"ค่าน้ำมันโดยประมาณ <b>{cost:,.0f} บาท</b>"
@@ -929,12 +861,10 @@ with tab2:
                     "และอัตราสิ้นเปลืองจริงอาจต่างกันตามสภาพจราจร รุ่นรถ และพฤติกรรมการขับขี่"
                 )
 
-        # ดึงอากาศของทุกจุดแวะ "ครั้งเดียว" แล้วใช้ซ้ำทั้งส่วนแจ้งเตือนและการ์ด (ฟีเจอร์ 4 - ลดการยิง API ซ้ำ)
         waypoint_weather = [
             (wp, get_weather(wp["lat"], wp["lon"], target_time=wp["eta_time"])) for wp in waypoints
         ]
 
-        # --- แจ้งเตือนฝนตกหนักระหว่างทาง ---
         rain_warnings = []
         for wp, w_check in waypoint_weather:
             if w_check and (w_check["prob"] >= 50 or w_check["code"] in [61, 63, 65, 80, 81, 82, 95, 96, 99]):
@@ -959,9 +889,7 @@ with tab2:
                 unsafe_allow_html=True,
             )
 
-        # --- การ์ดแสดงผล (responsive grid การ์ดเดียว ไม่ใช้ st.columns ตายตัวเหมือนเดิม) ---
         cards_html = []
-
         if s_data["w_a"]:
             cards_html.append(
                 render_weather_card(
@@ -969,19 +897,17 @@ with tab2:
                     f"ออกเดินทางตอนนี้ ({now_local().strftime('%H:%M')} น.)", s_data["w_a"],
                 )
             )
-
         for wp, w_wp in waypoint_weather:
             if w_wp:
                 card_kind = "stop" if wp.get("source") == "stop" else "auto"
                 title = wp["location_name"] if wp.get("source") == "stop" else f"กม.ที่ {wp['km_marker']}"
-                sub_location = wp["location_name"] if wp.get("source") == "stop" else wp["location_name"]
                 cards_html.append(
                     render_weather_card(
-                        card_kind, wp.get("icon", "📌"), title, f"กม.ที่ {wp['km_marker']} • {sub_location}",
+                        card_kind, wp.get("icon", "📌"), title,
+                        f"กม.ที่ {wp['km_marker']} • {wp['location_name']}",
                         f"ถึงประมาณ {wp['eta_str']}", w_wp,
                     )
                 )
-
         if w_b:
             cards_html.append(
                 render_weather_card(
@@ -989,10 +915,8 @@ with tab2:
                     f"ถึงประมาณ {dest_eta.strftime('%H:%M น.')}", w_b,
                 )
             )
-
         st.markdown(f'<div class="weather-grid">{"".join(cards_html)}</div>', unsafe_allow_html=True)
 
-        # --- แผนที่ ---
         st.subheader("🗺️ แผนที่เส้นทาง")
         col_r1, col_r2 = st.columns(2)
         with col_r1:
@@ -1007,7 +931,6 @@ with tab2:
         folium.PolyLine(
             locations=selected_route["path"], color="#0066FF", weight=6, opacity=0.8, popup=selected_route["label"]
         ).add_to(m)
-
         folium.Marker(
             [s_data["lat_a"], s_data["lon_a"]],
             popup=f"ต้นทาง: {s_data['origin']}",
@@ -1018,7 +941,6 @@ with tab2:
             popup=f"ปลายทาง: {s_data['dest']} (ถึง ~{dest_eta.strftime('%H:%M น.')})",
             icon=folium.Icon(color="red", icon="flag"),
         ).add_to(m)
-
         for wp in waypoints:
             folium.Marker(
                 [wp["lat"], wp["lon"]],
@@ -1039,8 +961,7 @@ with tab2:
                         tooltip=fs["name"],
                         icon=folium.DivIcon(
                             html='<div style="font-size:18px; line-height:1;">⛽</div>',
-                            icon_size=(22, 22),
-                            icon_anchor=(11, 11),
+                            icon_size=(22, 22), icon_anchor=(11, 11),
                         ),
                     ).add_to(fuel_group)
                 fuel_group.add_to(m)
@@ -1051,17 +972,13 @@ with tab2:
             tile_url = get_rain_radar_tile_url()
             if tile_url:
                 folium.raster_layers.TileLayer(
-                    tiles=tile_url,
-                    attr="RainViewer.com",
-                    name="เรดาร์ฝน (Rain Radar)",
-                    overlay=True,
-                    opacity=0.55,
+                    tiles=tile_url, attr="RainViewer.com", name="เรดาร์ฝน (Rain Radar)",
+                    overlay=True, opacity=0.55,
                 ).add_to(m)
             else:
                 st.caption("⚠️ ไม่สามารถโหลดข้อมูลเรดาร์ฝนได้ในขณะนี้")
 
         folium.LayerControl(collapsed=False).add_to(m)
-
-        # returned_objects=[] : ไม่ส่งค่ากลับจากแผนที่ (เช่น last_clicked) กลับมาที่ Python
-        # ทำให้การ hover/คลิกแผนที่ไม่ trigger การ rerun ทั้งหน้าโดยไม่จำเป็น (ฟีเจอร์ 4)
         st_folium(m, width=1100, height=500, key="osrm_route_map", returned_objects=[])
+    else:
+        st.info('👈 กรอกจุดเริ่มต้น/ปลายทางในแถบด้านซ้าย แล้วกด "ค้นหาเส้นทาง & สภาพอากาศ" เพื่อเริ่มต้น')
