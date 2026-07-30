@@ -326,6 +326,42 @@ def _rain_badge_class(prob: int) -> str:
     return "rain-low"
 
 
+def collapse_sidebar_on_mobile():
+    """หุบ sidebar อัตโนมัติหลังกดค้นหาสำเร็จ - เฉพาะจอมือถือ/แท็บเล็ต (ไม่ยุ่งกับจอ PC)
+    Streamlit ไม่หุบ sidebar ให้เองเวลากดปุ่มข้างในมัน จึงต้องยิง JS ไปคลิกปุ่มหุบให้แทน
+    ลองหลาย selector เพราะ Streamlit แต่ละเวอร์ชันตั้งชื่อ testid ไม่เหมือนกัน"""
+    components.html(
+        """
+        <script>
+        (function () {
+            const d = window.parent.document;
+            const w = window.parent.innerWidth;
+            if (w > 768) return;  // จอกว้างพอ (PC/แท็บเล็ตแนวนอน) ไม่ต้องหุบ
+
+            function tryCollapse() {
+                let btn = d.querySelector('[data-testid="stSidebarCollapseButton"] button')
+                    || d.querySelector('[data-testid="stSidebarCollapseButton"]');
+                if (!btn) {
+                    const buttons = d.querySelectorAll('button');
+                    for (const b of buttons) {
+                        const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                        if (label.includes('close sidebar') || label.includes('collapse sidebar')) {
+                            btn = b;
+                            break;
+                        }
+                    }
+                }
+                if (btn) btn.click();
+            }
+            setTimeout(tryCollapse, 250);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def render_weather_card(kind: str, icon: str, title: str, location: str, eta_label: str, weather: dict) -> str:
     badge_cls = _rain_badge_class(weather["prob"])
     return (
@@ -726,6 +762,7 @@ if page == "📍 สภาพอากาศจุดเดียว":
                     c2.metric("📊 สภาพอากาศ", interpret_weather_code(w["code"]))
                     c3.metric("🌧️ โอกาสฝนตก", f"{w['prob']} %")
                     st.session_state["tab1_point"] = {"lat": lat, "lon": lon, "name": name}
+                    collapse_sidebar_on_mobile()
             else:
                 st.session_state.pop("tab1_point", None)
                 st.error("ไม่พบข้อมูลสถานที่ดังกล่าว")
@@ -825,6 +862,7 @@ else:
                             "stop_coords": stop_coords,
                             "w_a": get_weather(lat_a, lon_a),
                         }
+                        collapse_sidebar_on_mobile()
                     else:
                         st.session_state.pop("search_data", None)
                         st.error("ไม่สามารถคำนวณเส้นทางระหว่างจุดที่กำหนดได้")
