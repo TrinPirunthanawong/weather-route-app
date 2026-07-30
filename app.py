@@ -74,6 +74,11 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
+    /* บอกเบราว์เซอร์ตรง ๆ ว่าแอปนี้เป็นธีมมืดที่ออกแบบมาเองแล้ว
+       กัน Android Chrome "Force Dark" (บังคับกลับสีเว็บที่ไม่ประกาศ color-scheme)
+       ไปกลับสีตัวหนังสือ/พื้นหลังในการ์ดที่เราออกแบบเองจนอ่านไม่ออก (iOS ไม่มีปัญหานี้) */
+    :root { color-scheme: dark; }
+
     html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
 
     .stButton>button {
@@ -127,12 +132,13 @@ st.markdown(
     .weather-card.auto   { background: linear-gradient(150deg,#2a2a3a,#1e1e2a); border-left: 4px solid #7c93f0; }
     .weather-card.dest   { background: linear-gradient(150deg,#2a1414,#1f0f0f); border-left: 4px solid #e74c3c; }
 
-    .weather-card h4 { margin: 0 0 8px 0; font-size: 15px; font-weight: 700; }
-    .weather-card .wc-loc  { font-size: 13px; opacity: .9; margin-bottom: 2px; }
-    .weather-card .wc-eta  { font-size: 12px; opacity: .65; margin-bottom: 10px; }
+    .weather-card h4 { margin: 0 0 8px 0; font-size: 15px; font-weight: 700; color: #f2f4f8; }
+    .weather-card .wc-loc  { font-size: 13px; opacity: .9; margin-bottom: 2px; color: #f2f4f8; }
+    .weather-card .wc-eta  { font-size: 12px; opacity: .65; margin-bottom: 10px; color: #f2f4f8; }
     .weather-card .wc-row {
         display: flex; justify-content: space-between; align-items: center;
         font-size: 13px; padding: 5px 0; border-top: 1px dashed rgba(255,255,255,.1);
+        color: #f2f4f8;
     }
     .rain-badge {
         display: inline-block; padding: 2px 9px; border-radius: 20px;
@@ -148,6 +154,7 @@ st.markdown(
         margin-bottom: 16px;
         font-size: 14px;
         line-height: 1.6;
+        color: #f2f4f8;
     }
     .route-banner { background: linear-gradient(120deg,#12283a,#0d1c2e); border: 1px solid #1f4a6e; }
     .fuel-banner   { background: linear-gradient(120deg,#3a2f12,#2a220e); border: 1px solid #7a5a2e; }
