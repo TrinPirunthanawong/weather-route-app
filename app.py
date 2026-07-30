@@ -47,7 +47,7 @@ components.html(
             addTag('link', {rel: 'manifest', href: '/app/static/manifest.json'});
         }
         if (!d.querySelector('meta[name="theme-color"]')) {
-            addTag('meta', {name: 'theme-color', content: '#0b0e14'});
+            addTag('meta', {name: 'theme-color', content: '#0e1117'});
         }
         // รองรับ "Add to Home Screen" บน iOS Safari
         addTag('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});
