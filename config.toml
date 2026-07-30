@@ -1,0 +1,16 @@
+# ไฟล์นี้ต้องอยู่ที่: .streamlit/config.toml (โฟลเดอร์เดียวกับ .streamlit/secrets.toml)
+# เปิดใช้งานการเสิร์ฟไฟล์ static (ไอคอน, manifest.json, service worker) สำหรับฟีเจอร์ PWA
+
+[server]
+enableStaticServing = true
+
+# กำหนดธีมมืดให้ Streamlit ตายตัว แทนที่จะพึ่งการเดา dark mode จากระบบ/เบราว์เซอร์
+# (ตอนเปิดผ่าน PWA แบบ standalone การเดาสีของ Streamlit อาจผิดพลาด ทำให้บาง widget
+#  เช่นช่องกรอกข้อความ กลายเป็นพื้นขาวตัวหนังสือเทาจาง ซ้อนอยู่บนพื้นหลังมืดที่เราคุมเอง)
+[theme]
+base = "dark"
+primaryColor = "#ff4b4b"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1a1f2b"
+textColor = "#fafafa"
+
