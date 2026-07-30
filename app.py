@@ -14,6 +14,7 @@ Weather & Route-Based Forecast
 """
 
 import html
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -189,17 +190,27 @@ def get_location_name(lat: float, lon: float) -> str:
         return "จุดระหว่างทาง"
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _get_weather_raw(lat: float, lon: float):
+    """ดึงข้อมูลดิบจาก Open-Meteo (cache 30 นาที ต่อพิกัด) พร้อม retry อัตโนมัติเมื่อโดน 429
+    (Open-Meteo ฟรีมี rate limit ร่วมกันทุกผู้ใช้ ถ้ายิงรัวเกินไปในเวลาไล่เลี่ยกันจะโดนจำกัดชั่วคราว)"""
     url = (
         f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
         f"&current=temperature_2m,weather_code"
         f"&hourly=temperature_2m,precipitation_probability,weather_code"
         f"&timezone=auto"
     )
-    res = requests.get(url, timeout=10)
-    res.raise_for_status()
-    return res.json()
+    last_status = None
+    for attempt in range(3):
+        res = requests.get(url, timeout=10)
+        if res.status_code == 429:
+            last_status = 429
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))  # รอแล้วลองใหม่ (1.5s, 3s)
+                continue
+        res.raise_for_status()
+        return res.json()
+    res.raise_for_status()  # หมดโควตา retry แล้วยังโดน 429 อยู่ -> โยน error ออกไปตามจริง
 
 
 def _nearest_hour_index(hourly_times, target_naive_dt):
@@ -217,8 +228,15 @@ def _nearest_hour_index(hourly_times, target_naive_dt):
 def get_weather(lat: float, lon: float, target_time: datetime | None = None):
     try:
         raw = _get_weather_raw(round(lat, 3), round(lon, 3))
-    except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการดึงสภาพอากาศ: {e}")
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status == 429:
+            st.caption("⏳ ระบบพยากรณ์อากาศมีคนใช้งานพร้อมกันเยอะในขณะนี้ กรุณาลองค้นหาใหม่อีกครั้งในอีกสักครู่")
+        else:
+            st.caption(f"⚠️ เกิดข้อผิดพลาดในการดึงสภาพอากาศ (รหัส {status or '?'})")
+        return None
+    except Exception:
+        st.caption("⚠️ เกิดข้อผิดพลาดในการดึงสภาพอากาศ กรุณาลองใหม่อีกครั้ง")
         return None
 
     if target_time is not None and "hourly" in raw:
@@ -861,9 +879,12 @@ else:
                     "และอัตราสิ้นเปลืองจริงอาจต่างกันตามสภาพจราจร รุ่นรถ และพฤติกรรมการขับขี่"
                 )
 
-        waypoint_weather = [
-            (wp, get_weather(wp["lat"], wp["lon"], target_time=wp["eta_time"])) for wp in waypoints
-        ]
+        # หน่วงเวลาเล็กน้อยระหว่างจุด กัน Open-Meteo จำกัดการยิงรัวเกินไปในเวลาไล่เลี่ยกัน (429)
+        waypoint_weather = []
+        for i, wp in enumerate(waypoints):
+            if i > 0:
+                time.sleep(0.2)
+            waypoint_weather.append((wp, get_weather(wp["lat"], wp["lon"], target_time=wp["eta_time"])))
 
         rain_warnings = []
         for wp, w_check in waypoint_weather:
