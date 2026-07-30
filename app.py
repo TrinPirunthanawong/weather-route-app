@@ -21,10 +21,50 @@ from zoneinfo import ZoneInfo
 import folium
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
 st.set_page_config(page_title="Weather & Route-Based Forecast", page_icon="⛅", layout="wide")
+
+# =========================================================================
+# PWA: ฝัง manifest / meta tag / service worker เพื่อให้ "ติดตั้งเป็นแอป" บนมือถือได้
+# =========================================================================
+# หมายเหตุ: ต้องเปิด enableStaticServing=true ใน .streamlit/config.toml
+# และวางไฟล์ manifest.json, sw.js, icon-192.png, icon-512.png ไว้ในโฟลเดอร์ static/ ข้าง app.py
+# ใช้เทคนิคยิง JS เข้าไปแก้ <head> ของหน้าหลัก เพราะ Streamlit ไม่เปิดให้แก้ head โดยตรง
+components.html(
+    """
+    <script>
+    (function () {
+        const d = window.parent.document;
+        function addTag(tag, attrs) {
+            const el = d.createElement(tag);
+            Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+            d.head.appendChild(el);
+        }
+        if (!d.querySelector('link[rel="manifest"]')) {
+            addTag('link', {rel: 'manifest', href: '/app/static/manifest.json'});
+        }
+        if (!d.querySelector('meta[name="theme-color"]')) {
+            addTag('meta', {name: 'theme-color', content: '#0b0e14'});
+        }
+        // รองรับ "Add to Home Screen" บน iOS Safari
+        addTag('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});
+        addTag('meta', {name: 'apple-mobile-web-app-title', content: 'Weather Route'});
+        addTag('link', {rel: 'apple-touch-icon', href: '/app/static/icon-192.png'});
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/app/static/sw.js').catch(function (err) {
+                console.log('SW registration failed:', err);
+            });
+        }
+    })();
+    </script>
+    """,
+    height=0,
+    width=0,
+)
 
 # =========================================================================
 # STYLE: ธีมทันสมัย + responsive สำหรับ PC และมือถือ
