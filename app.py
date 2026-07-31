@@ -52,7 +52,17 @@ components.html(
         // รองรับ "Add to Home Screen" บน iOS Safari
         addTag('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});
         addTag('meta', {name: 'apple-mobile-web-app-title', content: 'Weather Route'});
+
+        // Streamlit Cloud ใส่ apple-touch-icon/favicon ของตัวเองไว้ใน <head> อยู่ก่อนแล้ว
+        // ต้องลบของเดิมออกก่อน ไม่งั้น Safari จะยังใช้ไอคอนของ Streamlit (โลโก้สีแดง) แทนของเรา
+        d.querySelectorAll(
+            'link[rel="apple-touch-icon"], link[rel="apple-touch-icon-precomposed"], link[rel~="icon"]'
+        ).forEach((el) => el.remove());
+
         addTag('link', {rel: 'apple-touch-icon', href: '/app/static/icon-192.png'});
+        addTag('link', {rel: 'apple-touch-icon', sizes: '192x192', href: '/app/static/icon-192.png'});
+        addTag('link', {rel: 'apple-touch-icon', sizes: '512x512', href: '/app/static/icon-512.png'});
+        addTag('link', {rel: 'icon', type: 'image/png', sizes: '192x192', href: '/app/static/icon-192.png'});
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/app/static/sw.js').catch(function (err) {
